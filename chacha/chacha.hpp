@@ -23,7 +23,7 @@
 #ifndef CHACHA_HPP_74350828
 #define CHACHA_HPP_74350828
 
-#include "chacha_detail.hpp"
+#include "chacha/chacha_detail.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -124,12 +124,12 @@ public:
 		transform_impl(rounds, buffer, source, bytes);
 	}
 
-private:
 	void set_block_index(std::uint64_t block_index) noexcept
 	{
 		std::memcpy(&_keypad.data[12], &block_index, 8);
 	}
 
+private:
 	void transform_impl(detail::cipher_rounds rounds,
 		std::byte* buffer, const std::byte* source, std::size_t bytes) noexcept
 	{
@@ -173,10 +173,14 @@ public:
 		detail::key_bits<KeyBits> kb,
 		detail::cipher_rounds rounds,
 		const std::byte* key_data,
-		std::uint64_t nonce) noexcept
+		std::uint64_t nonce,
+		std::uint64_t block_index = 0) noexcept
 		: _cipher(kb, key_data, nonce)
 		, _rounds(rounds)
-	{}
+	{
+		if (block_index)
+		    set_block_index(block_index);
+	}
 
 	void transform(
 		std::byte* buffer, const std::byte* source, std::size_t bytes) noexcept
@@ -210,6 +214,12 @@ public:
 			handle_out_of_space(buffer, source, bytes);
 		}
 	}
+
+	void set_block_index(std::uint64_t block_index) noexcept
+    {
+	    _cipher.set_block_index(block_index);
+	    _space = 0;
+    }
 
 private:
 	void handle_out_of_space(
