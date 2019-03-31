@@ -31,6 +31,14 @@
 #include <limits>
 #include <type_traits>
 
+#ifdef _MSC_VER
+#define CHACHA_FORCEINLINE(t) __forceinline type
+#elif defined(__clang__) || defined(__GCC__)
+#define CHACHA_FORCEINLINE(t) inline t __attribute__((always_inline))
+#else
+#define CHACHA_FORCEINLINE(t) inline t
+#endif
+
 #if (defined(_MSC_VER) && !defined(__clang__)) \
  && (defined(_M_X64) || _M_IX86_FP == 2)
 
@@ -39,7 +47,7 @@
 
 #endif
 
-#if defined(__SSE2__)
+#if defined(__SSE2__) && !defined(CHACHA_DISABLE_SSE)
 
 #define CHACHA_SSE2_AVAILABLE
 
@@ -48,7 +56,7 @@
 
 #if defined(__SSSE3__)
 
-#define CHACHA_SSSE3_AVAILABLE
+#define CHACHA_SSSE3_AVAILABLE && !defined(CHACHA_DISABLE_SSE)
 
 #include <pmmintrin.h>
 #include <tmmintrin.h>
@@ -201,8 +209,8 @@ static void qround(
 	r1 = rol(r1 ^ (r2 += r3), 7);
 }
 
-inline void transform_xor(
-	keypad_state& key,
+CHACHA_FORCEINLINE(void) transform_xor_body(
+	const keypad_state& key,
 	cipher_rounds rounds,
 	std::byte* buffer,
 	const std::byte* source) noexcept
@@ -271,11 +279,110 @@ inline void transform_xor(
 		(r14 + key.data[14]) ^ memory_load<std::uint32_t>(source + 56));
 	memory_store(buffer + 60,
 		(r15 + key.data[15]) ^ memory_load<std::uint32_t>(source + 60));
+}
+
+inline void transform_xor_const(
+	const keypad_state& key,
+	cipher_rounds rounds,
+	std::byte* buffer,
+	const std::byte* source) noexcept
+{
+	transform_xor_body(key, rounds, buffer, source);
+}
+
+inline void transform_xor(
+	keypad_state& key,
+	cipher_rounds rounds,
+	std::byte* buffer,
+	const std::byte* source) noexcept
+{
+	transform_xor_body(key, rounds, buffer, source);
+
+	key.data[12] += 1;
+}
+
+CHACHA_FORCEINLINE(void) keypad_body(const keypad_state& key, const cipher_rounds& rounds, std::byte* buffer) noexcept
+{
+	auto r0{ key.data[0] };
+	auto r1{ key.data[1] };
+	auto r2{ key.data[2] };
+	auto r3{ key.data[3] };
+	auto r4{ key.data[4] };
+	auto r5{ key.data[5] };
+	auto r6{ key.data[6] };
+	auto r7{ key.data[7] };
+	auto r8{ key.data[8] };
+	auto r9{ key.data[9] };
+	auto r10{ key.data[10] };
+	auto r11{ key.data[11] };
+	auto r12{ key.data[12] };
+	auto r13{ key.data[13] };
+	auto r14{ key.data[14] };
+	auto r15{ key.data[15] };
+
+	// rounds.rounds() % 2 == 0 gets enforced at compile time
+	// Equivalent to [0, rounds) - just reversed
+	for (std::size_t i{ rounds.rounds() / 2 }; i-- > 0; )
+	{
+		qround(r0, r4, r8, r12);
+		qround(r1, r5, r9, r13);
+		qround(r2, r6, r10, r14);
+		qround(r3, r7, r11, r15);
+
+		qround(r0, r5, r10, r15);
+		qround(r1, r6, r11, r12);
+		qround(r2, r7, r8, r13);
+		qround(r3, r4, r9, r14);
+	}
+
+	memory_store(buffer + 0, r0 + key.data[0]);
+	memory_store(buffer + 4, r1 + key.data[1]);
+	memory_store(buffer + 8, r2 + key.data[2]);
+	memory_store(buffer + 12, r3 + key.data[3]);
+	memory_store(buffer + 16, r4 + key.data[4]);
+	memory_store(buffer + 20, r5 + key.data[5]);
+	memory_store(buffer + 24, r6 + key.data[6]);
+	memory_store(buffer + 28, r7 + key.data[7]);
+	memory_store(buffer + 32, r8 + key.data[8]);
+	memory_store(buffer + 36, r9 + key.data[9]);
+	memory_store(buffer + 40, r10 + key.data[10]);
+	memory_store(buffer + 44, r11 + key.data[11]);
+	memory_store(buffer + 48, r12 + key.data[12]);
+	memory_store(buffer + 52, r13 + key.data[13]);
+	memory_store(buffer + 56, r14 + key.data[14]);
+	memory_store(buffer + 60, r15 + key.data[15]);
+}
+
+inline void keypad_const(
+	const keypad_state& key,
+	cipher_rounds rounds,
+	std::byte* buffer) noexcept
+{
+	keypad_body(key, rounds, buffer);
+}
+
+inline void keypad(
+	keypad_state& key,
+	cipher_rounds rounds,
+	std::byte* buffer) noexcept
+{
+	keypad_body(key, rounds, buffer);
 
 	key.data[12] += 1;
 }
 
 #if !defined(CHACHA_SSE2_AVAILABLE)
+
+static void transform_xor_3_blocks_const(
+	const keypad_state& key,
+	cipher_rounds rounds,
+	std::byte* buffer,
+	const std::byte* source) noexcept
+{
+	transform_xor_const(key, rounds, buffer + 0, source + 0);
+	transform_xor_const(key, rounds, buffer + 64, source + 64);
+	transform_xor_const(key, rounds, buffer + 128, source + 128);
+}
 
 static void transform_xor_3_blocks(
 	keypad_state& key,
@@ -286,6 +393,26 @@ static void transform_xor_3_blocks(
 	transform_xor(key, rounds, buffer + 0, source + 0);
 	transform_xor(key, rounds, buffer + 64, source + 64);
 	transform_xor(key, rounds, buffer + 128, source + 128);
+}
+
+static void keypad_3_blocks_const(
+	const keypad_state& key,
+	cipher_rounds rounds,
+	std::byte* buffer) noexcept
+{
+	keypad_const(key, rounds, buffer + 0);
+	keypad_const(key, rounds, buffer + 64);
+	keypad_const(key, rounds, buffer + 128);
+}
+
+static void keypad_3_blocks(
+	keypad_state& key,
+	cipher_rounds rounds,
+	std::byte* buffer) noexcept
+{
+	keypad(key, rounds, buffer + 0);
+	keypad(key, rounds, buffer + 64);
+	keypad(key, rounds, buffer + 128);
 }
 
 #else
@@ -355,13 +482,13 @@ static void triple_qround(
 	v11 = prold<N>(v11);
 }
 
-inline void transform_xor_3_blocks(
-	keypad_state& key,
+CHACHA_FORCEINLINE(__m128i) transform_xor_3_blocks_body(
+	const keypad_state& key,
 	cipher_rounds rounds,
 	std::byte* buffer,
 	const std::byte* source) noexcept
 {
-	const auto key_ptr{ reinterpret_cast<__m128i*>(key.data.data()) };
+	const auto key_ptr{ reinterpret_cast<const __m128i*>(key.data.data()) };
 	const auto buf_ptr{ reinterpret_cast<__m128i*>(buffer) };
 	const auto src_ptr{ reinterpret_cast<const __m128i*>(source) };
 
@@ -458,7 +585,7 @@ inline void transform_xor_3_blocks(
 	v11 = _mm_add_epi32(v11, k3);
 
 	k3 = _mm_add_epi32(k3, _mm_set_epi32(0, 0, 0, 1));
-	
+
 	_mm_storeu_si128(buf_ptr + 8,
 		_mm_xor_si128(v8, _mm_loadu_si128(src_ptr + 8)));
 	_mm_storeu_si128(buf_ptr + 9,
@@ -468,7 +595,145 @@ inline void transform_xor_3_blocks(
 	_mm_storeu_si128(buf_ptr + 11,
 		_mm_xor_si128(v11, _mm_loadu_si128(src_ptr + 11)));
 
-	_mm_store_si128(key_ptr + 3, k3);
+	return k3;
+}
+
+inline void transform_xor_3_blocks_const(
+	const keypad_state& key,
+	cipher_rounds rounds,
+	std::byte* buffer,
+	const std::byte* source) noexcept
+{
+	transform_xor_3_blocks_body(key, rounds, buffer, source);
+}
+
+inline void transform_xor_3_blocks(
+	keypad_state& key,
+	cipher_rounds rounds,
+	std::byte* buffer,
+	const std::byte* source) noexcept
+{
+	const auto key_ptr{ reinterpret_cast<__m128i* const>(key.data.data()) };
+	_mm_store_si128(key_ptr + 3, transform_xor_3_blocks_body(key, rounds, buffer, source));
+}
+
+CHACHA_FORCEINLINE(__m128i) keypad_3_blocks_body(
+	const keypad_state& key,
+	cipher_rounds rounds,
+	std::byte* buffer) noexcept
+{
+	const auto key_ptr{ reinterpret_cast<const __m128i*>(key.data.data()) };
+	const auto buf_ptr{ reinterpret_cast<__m128i*>(buffer) };
+
+	auto k0{ _mm_load_si128(key_ptr + 0) };
+	auto k1{ _mm_load_si128(key_ptr + 1) };
+	auto k2{ _mm_load_si128(key_ptr + 2) };
+	auto k3{ _mm_load_si128(key_ptr + 3) };
+
+	auto v0{ k0 };
+	auto v1{ k1 };
+	auto v2{ k2 };
+	auto v3{ k3 };
+
+	auto v4{ k0 };
+	auto v5{ k1 };
+	auto v6{ k2 };
+	auto v7{ _mm_add_epi32(v3, _mm_set_epi32(0, 0, 0, 1)) };
+
+	auto v8{ k0 };
+	auto v9{ k1 };
+	auto v10{ k2 };
+	auto v11{ _mm_add_epi32(v7, _mm_set_epi32(0, 0, 0, 1)) };
+
+	// rounds.rounds() % 2 == 0 gets enforced at compile time
+	// Equivalent to [0, rounds) - just reversed
+	for (std::size_t i{ rounds.rounds() / 2 }; i-- > 0;)
+	{
+		triple_qround<16>(v0, v1, v3, v4, v5, v7, v8, v9, v11);
+		triple_qround<12>(v2, v3, v1, v6, v7, v5, v10, v11, v9);
+		triple_qround<8>(v0, v1, v3, v4, v5, v7, v8, v9, v11);
+		triple_qround<7>(v2, v3, v1, v6, v7, v5, v10, v11, v9);
+
+		v1 = pshufd1(v1);
+		v2 = pshufd2(v2);
+		v3 = pshufd3(v3);
+		v5 = pshufd1(v5);
+		v6 = pshufd2(v6);
+		v7 = pshufd3(v7);
+		v9 = pshufd1(v9);
+		v10 = pshufd2(v10);
+		v11 = pshufd3(v11);
+
+		triple_qround<16>(v0, v1, v3, v4, v5, v7, v8, v9, v11);
+		triple_qround<12>(v2, v3, v1, v6, v7, v5, v10, v11, v9);
+		triple_qround<8>(v0, v1, v3, v4, v5, v7, v8, v9, v11);
+		triple_qround<7>(v2, v3, v1, v6, v7, v5, v10, v11, v9);
+
+		v1 = pshufd3(v1);
+		v2 = pshufd2(v2);
+		v3 = pshufd1(v3);
+		v5 = pshufd3(v5);
+		v6 = pshufd2(v6);
+		v7 = pshufd1(v7);
+		v9 = pshufd3(v9);
+		v10 = pshufd2(v10);
+		v11 = pshufd1(v11);
+	}
+
+	v0 = _mm_add_epi32(v0, k0);
+	v1 = _mm_add_epi32(v1, k1);
+	v2 = _mm_add_epi32(v2, k2);
+	v3 = _mm_add_epi32(v3, k3);
+
+	k3 = _mm_add_epi32(k3, _mm_set_epi32(0, 0, 0, 1));
+
+	_mm_storeu_si128(buf_ptr + 0, v0);
+	_mm_storeu_si128(buf_ptr + 1, v1);
+	_mm_storeu_si128(buf_ptr + 2, v2);
+	_mm_storeu_si128(buf_ptr + 3, v3);
+
+	v4 = _mm_add_epi32(v4, k0);
+	v5 = _mm_add_epi32(v5, k1);
+	v6 = _mm_add_epi32(v6, k2);
+	v7 = _mm_add_epi32(v7, k3);
+
+	k3 = _mm_add_epi32(k3, _mm_set_epi32(0, 0, 0, 1));
+
+	_mm_storeu_si128(buf_ptr + 4, v4);
+	_mm_storeu_si128(buf_ptr + 5, v5);
+	_mm_storeu_si128(buf_ptr + 6, v6);
+	_mm_storeu_si128(buf_ptr + 7, v7);
+
+	v8 = _mm_add_epi32(v8, k0);
+	v9 = _mm_add_epi32(v9, k1);
+	v10 = _mm_add_epi32(v10, k2);
+	v11 = _mm_add_epi32(v11, k3);
+
+	k3 = _mm_add_epi32(k3, _mm_set_epi32(0, 0, 0, 1));
+
+	_mm_storeu_si128(buf_ptr + 8, v8);
+	_mm_storeu_si128(buf_ptr + 9, v9);
+	_mm_storeu_si128(buf_ptr + 10, v10);
+	_mm_storeu_si128(buf_ptr + 11, v11);
+	
+	return k3;
+}
+
+inline void keypad_3_blocks_const(
+	const keypad_state& key,
+	cipher_rounds rounds,
+	std::byte* buffer) noexcept
+{
+	keypad_3_blocks_body(key, rounds, buffer);
+}
+
+inline void keypad_3_blocks(
+	keypad_state& key,
+	cipher_rounds rounds,
+	std::byte* buffer) noexcept
+{
+	const auto key_ptr{ reinterpret_cast<__m128i* const>(key.data.data()) };
+	_mm_store_si128(key_ptr + 3, keypad_3_blocks_body(key, rounds, buffer));
 }
 
 #endif

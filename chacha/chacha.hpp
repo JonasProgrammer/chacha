@@ -41,6 +41,7 @@ static constexpr auto key_bits_128{ detail::key_bits<128>{} };
 static constexpr auto key_bits_256{ detail::key_bits<256>{} };
 
 struct block_index_continue_tag {};
+struct block_index_keep_tag {};
 
 /*
  * ==== class buffered_cipher ====
@@ -124,9 +125,62 @@ public:
 		transform_impl(rounds, buffer, source, bytes);
 	}
 
+	void transform(block_index_keep_tag tag,
+		const std::byte* source, std::byte* buffer, std::size_t bytes) const noexcept
+	{
+		transform(default_rounds, tag, source, buffer, bytes);
+	}
+
+	void transform(detail::cipher_rounds rounds, block_index_keep_tag,
+		const std::byte* source, std::byte* buffer, std::size_t bytes) const noexcept
+	{
+		transform_const_impl(rounds, buffer, source, bytes);
+	}
+
+	void keypad(std::uint64_t block_index, std::byte* buffer, std::size_t bytes) noexcept
+	{
+		keypad(default_rounds, block_index, buffer, bytes);
+	}
+
+	void keypad(detail::cipher_rounds rounds, std::uint64_t block_index,
+		std::byte* buffer, std::size_t bytes) noexcept
+	{
+		set_block_index(block_index);
+		keypad_impl(rounds, buffer, bytes);
+	}
+
+	void keypad(block_index_continue_tag tag,
+		std::byte* buffer, std::size_t bytes) noexcept
+	{
+		keypad(default_rounds, tag, buffer, bytes);
+	}
+
+	void keypad(detail::cipher_rounds rounds, block_index_continue_tag,
+		std::byte* buffer, std::size_t bytes) noexcept
+	{
+		keypad_impl(rounds, buffer, bytes);
+	}
+
+	void keypad(block_index_keep_tag tag,
+		std::byte* buffer, std::size_t bytes) const noexcept
+	{
+		keypad(default_rounds, tag, buffer, bytes);
+	}
+
+	void keypad(detail::cipher_rounds rounds, block_index_keep_tag,
+		std::byte* buffer, std::size_t bytes) const noexcept
+	{
+		keypad_const_impl(rounds, buffer, bytes);
+	}
+
 	void set_block_index(std::uint64_t block_index) noexcept
 	{
 		std::memcpy(&_keypad.data[12], &block_index, 8);
+	}
+
+	std::uint64_t block_index() const noexcept
+	{
+		return *reinterpret_cast<const std::uint64_t*>(&_keypad.data[12]);
 	}
 
 private:
@@ -153,6 +207,87 @@ private:
 				_keypad,
 				rounds,
 				&local_buffer[0],
+				&local_buffer[0]);
+
+			std::memcpy(buffer, &local_buffer[0], bytes);
+		}
+	}
+
+	void transform_const_impl(detail::cipher_rounds rounds,
+		std::byte* buffer, const std::byte* source, std::size_t bytes) const noexcept
+	{
+		for (; bytes >= 192; bytes -= 192, buffer += 192, source += 192)
+		{
+			detail::transform_xor_3_blocks_const(_keypad, rounds, buffer, source);
+		}
+
+		for (; bytes >= 64; bytes -= 64, buffer += 64, source += 64)
+		{
+			detail::transform_xor_const(_keypad, rounds, buffer, source);
+		}
+
+		if (bytes > 0)
+		{
+			std::array<std::byte, 64> local_buffer{};
+
+			std::memcpy(&local_buffer[0], source, bytes);
+
+			detail::transform_xor_const(
+				_keypad,
+				rounds,
+				&local_buffer[0],
+				&local_buffer[0]);
+
+			std::memcpy(buffer, &local_buffer[0], bytes);
+		}
+	}
+
+	void keypad_impl(detail::cipher_rounds rounds,
+		std::byte* buffer, std::size_t bytes) noexcept
+	{
+		for (; bytes >= 192; bytes -= 192, buffer += 192)
+		{
+			detail::keypad_3_blocks(_keypad, rounds, buffer);
+		}
+
+		for (; bytes >= 64; bytes -= 64, buffer += 64)
+		{
+			detail::keypad(_keypad, rounds, buffer);
+		}
+
+		if (bytes > 0)
+		{
+			std::array<std::byte, 64> local_buffer{};
+
+			detail::keypad(
+				_keypad,
+				rounds,
+				&local_buffer[0]);
+
+			std::memcpy(buffer, &local_buffer[0], bytes);
+		}
+	}
+
+	void keypad_const_impl(detail::cipher_rounds rounds,
+		std::byte* buffer, std::size_t bytes) const noexcept
+	{
+		for (; bytes >= 192; bytes -= 192, buffer += 192)
+		{
+			detail::keypad_3_blocks_const(_keypad, rounds, buffer);
+		}
+
+		for (; bytes >= 64; bytes -= 64, buffer += 64)
+		{
+			detail::keypad_const(_keypad, rounds, buffer);
+		}
+
+		if (bytes > 0)
+		{
+			std::array<std::byte, 64> local_buffer{};
+
+			detail::keypad_const(
+				_keypad,
+				rounds,
 				&local_buffer[0]);
 
 			std::memcpy(buffer, &local_buffer[0], bytes);
@@ -216,10 +351,10 @@ public:
 	}
 
 	void set_block_index(std::uint64_t block_index) noexcept
-    {
-	    _cipher.set_block_index(block_index);
-	    _space = 0;
-    }
+	{
+		_cipher.set_block_index(block_index);
+		_space = 0;
+	}
 
 private:
 	void handle_out_of_space(
@@ -250,10 +385,9 @@ private:
 		{
 			_buffer = {};
 
-			_cipher.transform(
+			_cipher.keypad(
 				_rounds,
 				block_index_continue_tag{},
-				&_buffer[0],
 				&_buffer[0],
 				_buffer.size());
 
